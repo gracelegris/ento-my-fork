@@ -582,9 +582,53 @@ doc <- doc %>%
 output_file <- file.path(ResultDir, "species_seasons_table.docx")
 print(doc, target = output_file)
 
+## -----------------------------------------------------------------------------------------------------------------------------------------
+### 3) Comparison of Species Composition by Collection Method (Indoor CDC, Outdoor CDC, PSC)
+## -----------------------------------------------------------------------------------------------------------------------------------------
+
+# create a summary dataframe to calculate counts
+method_df <- all_ento_data %>%
+  dplyr::filter(!is.na(settlement_type)) %>% # remove observations for which settlement_type is NA
+  mutate( # separate CDC by indoor and outdoor, PSC remains as-is
+    collection_type = case_when(
+      method == "CDC" & location == "Indoor" ~ "Indoor CDC",
+      method == "CDC" & location == "Outdoor" ~ "Outdoor CDC",
+      method == "PSC" ~ "PSC"
+    )
+  ) %>%
+  group_by(settlement_type, collection_type) %>%
+  summarise(
+    An_gambiae_sum = sum(An.gambiae, na.rm = TRUE),
+    An_funestus_sum = sum(An.funestus, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = c(An_gambiae_sum, An_funestus_sum), names_to = "species", values_to = "count")
+
+method_palette <- c("#696d7d", "#8d9f87", "#f0dcca")
+             
+# plot species composition data
+species_by_method <- ggplot(method_df, aes(x = species, y = count, fill = collection_type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~settlement_type) +
+  scale_fill_manual(
+    values = method_palette,
+    name = "Collection Method",
+    labels = c("Indoor CDC", "Outdoor CDC", "PSC")
+  ) +
+  scale_x_discrete(labels = c("An. funestus", "An. gambiae")) +
+  labs(
+    title = "Mosquito Species by Collection Method",
+    x = "Species",
+    y = "Number of Mosquitoes",
+    fill = "Collection Method"
+  ) +
+  theme_manuscript()
+species_by_method
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_method_plot.pdf'), plot = species_by_method, width = 12, height = 8)
 
 ## -----------------------------------------------------------------------------------------------------------------------------------------
-### 3) Blood Meal Status (PSC + CDC Combined) by Species and Settlement Type
+### 4) Blood Meal Status (PSC Data Only) by Species and Settlement Type
 ## -----------------------------------------------------------------------------------------------------------------------------------------
 
 psc_bm_df <- bind_rows(psc_dry_counts, psc_wet_counts)
@@ -685,4 +729,172 @@ molecular_df <- molecular_df %>%
   select(-`...8`)
 
 
+## -----------------------------------------------------------------------------------------------------------------------------------------
+### 5) Sporozoite Rate in CDC vs PSC Collections and by Species
+## -----------------------------------------------------------------------------------------------------------------------------------------
 
+# make df with counts of sporozoite positivity by collection method
+sporozoite_data <- molecular_df %>%
+  mutate( # separate CDC by indoor and outdoor, PSC remains as-is
+    collection_type = case_when(
+      method == "CDC" & location == "Indoor" ~ "Indoor CDC",
+      method == "CDC" & location == "Outdoor" ~ "Outdoor CDC",
+      method == "PSC" ~ "PSC"
+    )
+  ) %>%
+  group_by(collection_type, species, sporozoite_result) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = sporozoite_result, values_from = count, values_fill = 0)
+
+# An. gambiae is the only species with sporozoite positivity, so filter out other species + reshape data for plotting
+sporozoite_gambiae_data <- sporozoite_data %>%
+  dplyr::filter(species == "An. gambiae s.l") %>%
+  select(collection_type, Negative, Positive, "NA") %>%
+  tidyr::pivot_longer(cols = c(Negative, Positive, "NA"), 
+                      names_to = "result", 
+                      values_to = "count")
+
+# calculate percentages of positivity by collection method
+sporozoite_gambiae_data <- sporozoite_gambiae_data %>%
+  group_by(collection_type) %>%
+  mutate(
+    total = sum(count),
+    percentage = (count / total) * 100,
+    label = paste0(round(percentage, 1), "%")
+  )
+
+# plot sporozoite positivity data
+spor_palette = c("#4b6043", "#9dba9a", "#ECECEC")
+
+sporozoite_plot <- ggplot(sporozoite_gambiae_data, aes(x = collection_type, y = count, fill = result)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5), size = 4) +
+  labs(title = "An. Gambiae Sporozoite Results by Collection Method",
+       x = "Collection Method",
+       y = "Count",
+       fill = "Sporozoite Result") +
+  theme_manuscript() +
+  scale_fill_manual(
+    values = spor_palette,
+    name = "Sporozoite Positivity",
+    labels = c("Positive", "Negative"))
+sporozoite_plot
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_sporozoite_method_plot.pdf'), plot = sporozoite_plot, width = 12, height = 8)
+
+# make another plot that is separated by ward (Agugu and Challenge)
+sporozoite_data_wards <- molecular_df %>%
+  mutate(
+    collection_type = case_when(
+      method == "CDC" & location == "Indoor" ~ "Indoor CDC",
+      method == "CDC" & location == "Outdoor" ~ "Outdoor CDC",
+      method == "PSC" ~ "PSC"
+    )
+  ) %>%
+  group_by(ward_name, collection_type, species, sporozoite_result) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  pivot_wider(names_from = sporozoite_result, values_from = count, values_fill = 0)
+
+# filter for An. gambiae s.l and reshape data for plotting
+sporozoite_gambiae_data_wards <- sporozoite_data_wards %>%
+  dplyr::filter(species == "An. gambiae s.l") %>%
+  select(ward_name, collection_type, Negative, Positive, `NA`) %>%
+  pivot_longer(cols = c(Negative, Positive, `NA`), 
+               names_to = "result", 
+               values_to = "count")
+
+# calculate percentages
+sporozoite_gambiae_data_wards <- sporozoite_gambiae_data_wards %>%
+  group_by(ward_name, collection_type) %>%
+  mutate(
+    total = sum(count),
+    percentage = (count / total) * 100,
+    label = ifelse(percentage > 0, paste0(round(percentage, 1), "%"), "") # only show label if percentage > 0
+  )
+
+# plot
+sporozoite_plot_wards <- ggplot(sporozoite_gambiae_data_wards, aes(x = collection_type, y = count, fill = result)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = label), position = position_stack(vjust = 0.5), size = 3) +
+  labs(title = "An. Gambiae Sporozoite Results by Collection Method and Ward",
+       x = "Collection Method",
+       y = "Count",
+       fill = "Sporozoite Result") +
+  theme_manuscript() +
+  scale_fill_manual(
+    values = spor_palette,
+    name = "Sporozoite Positivity",
+    labels = c("Positive", "Negative", "NA")
+  ) +
+  facet_wrap(~ ward_name)
+sporozoite_plot_wards
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_sporozoite_method_ward_plot.pdf'), plot = sporozoite_plot_wards, width = 12, height = 8)
+
+
+## =========================================================================================================================================
+### HUMAN BITING RATE (HBR)
+## =========================================================================================================================================
+
+# subset data where total anopheles count is greater than zero
+subset_cdc <- cdc[cdc$`Total Anopheles` > 0, ]
+
+# summarize anopheles caught by settlement classification and location
+ano_caught_cdc <- subset_cdc %>%
+  dplyr::filter(State == "Oyo") %>%
+  group_by(`Settlement Classification`, `Location`) %>% 
+  summarise(anopheles_caught = sum(`Total Anopheles`)) %>%
+  ungroup()
+
+# set number of night baits
+ano_caught_cdc$no_night_bait <- 14
+
+# calculate HBR (# of mosquitoes collected / (number of nights x number of humans slept in the house as bait))
+ano_caught_cdc <- ano_caught_cdc %>%
+  mutate(HBR = anopheles_caught / no_night_bait)
+
+# filter for indoor hbr
+hbr_indoor <- ano_caught_cdc %>% dplyr::filter(Location == "Indoor")
+
+# plot indoor hbr
+hbr_indoor_plot <- ggplot(data = hbr_indoor, aes(x = `Settlement Classification`, y = HBR, 
+                                   group = `Settlement Classification`,
+                                   colour = `Settlement Classification`)) +
+  scale_x_discrete(limits = c("Formal", "Informal", "Slum")) +
+  geom_point(size = 3.0) +
+  geom_line() +
+  labs(y = "Human Biting Rate", x = "Settlement Type",
+       title = "Indoor Human Biting Rate by settlement type, 2023") +
+  theme_manuscript() +
+  theme(
+    plot.title = element_text(size = 12),
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+hbr_indoor_plot
+
+# filter for outdoor hbr
+hbr_outdoor <- ano_caught_cdc %>% dplyr::filter(Location == "Outdoor")
+
+# plot outdoor hbr
+hbr_outdoor_plot <- ggplot(data = hbr_outdoor, aes(x = `Settlement Classification`, y = HBR, 
+                                    group = `Settlement Classification`,
+                                    colour = `Settlement Classification`)) +
+  scale_x_discrete(limits = c("Formal", "Informal", "Slum")) +
+  geom_point(size = 3.0) +
+  geom_line() +
+  labs(y = "Human Biting Rate", x = "Settlement Type",
+       title = "Outdoor Human Biting Rate by settlement type, 2023") +
+  theme_manuscript() +
+  theme(
+    plot.title = element_text(size = 12),
+    legend.position = c(.95, .95),
+    legend.justification = c("right", "top"),
+    legend.box.just = "right",
+    legend.margin = margin(6, 6, 6, 6)
+  )
+hbr_outdoor_plot

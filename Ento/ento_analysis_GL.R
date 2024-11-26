@@ -556,6 +556,32 @@ species_season_plot <- ggplot(species_inventory_by_season, aes(x = season, y = c
 # save as .pdf
 ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_by_season_plot.pdf'), plot = species_season_plot, width = 8, height = 8)
 
+# new plot that excludes Culicines to better see Gambiae/Funestus proportion
+palette_no_cul <- c("#e8dab2", "#dd6e42", "#c0d6df")
+species_inventory_by_season_no_cul = subset(species_inventory_by_season, !(species %in% c("total_Culicine")))
+species_season_plot_no_cul <- ggplot(species_inventory_by_season_no_cul, aes(x = season, y = count, fill = species)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(
+    values = palette_no_cul,
+    name = "Species",
+    labels = c("An.gambiae", "An.funestus", "Other")
+  ) +
+  labs(
+    title = "Mosquito Species Composition by Season",
+    x = "Season",
+    y = "Count"
+  ) +
+  scale_x_discrete(labels = c("Dry", "Wet")) +
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.subtitle = element_text(hjust = 0.5),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_by_season_no_cul.pdf'), plot = species_season_plot_no_cul, width = 8, height = 8)
+
 # export this data as a table (hard to see in plot)
 library(officer)
 library(knitr)
@@ -616,7 +642,7 @@ species_by_method <- ggplot(method_df, aes(x = species, y = count, fill = collec
   ) +
   scale_x_discrete(labels = c("An. funestus", "An. gambiae")) +
   labs(
-    title = "Mosquito Species by Collection Method",
+    title = "Mosquito Species by Collection Method and Settlement Type",
     x = "Species",
     y = "Number of Mosquitoes",
     fill = "Collection Method"
@@ -835,66 +861,237 @@ ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_sporozoite_method_ward_pl
 
 
 ## =========================================================================================================================================
-### HUMAN BITING RATE (HBR)
+### HUMAN BITING RATE (HBR) - Using CDC Data
+# Human Biting Rate (HBR) = Number of species collected divided by (number of nights × number of humans that slept in the house as bait)
 ## =========================================================================================================================================
 
-# subset data where total anopheles count is greater than zero
-subset_cdc <- cdc[cdc$`Total Anopheles` > 0, ]
+# filter data to include only CDC wet and dry (no PSC data)
+cdc_wet_dry = subset(all_ento_data, (method %in% c("CDC")))
+
+# # subset data where total anopheles count is greater than zero (use both CDC wet and dry data)
+# cdc_wet_dry_subset <- cdc_wet_dry[cdc_wet_dry$`Anopheles` > 0, ]
+
+# remove rows for which all values are NA
+cdc_wet_dry_subset <- cdc_wet_dry[!apply(cdc_wet_dry, 1, function(row) all(is.na(row))), ]
+
+# remove rows for which settlement type is NA
+cdc_wet_dry_subset <- subset(cdc_wet_dry_subset, !(settlement_type %in% c(NA)))
 
 # summarize anopheles caught by settlement classification and location
-ano_caught_cdc <- subset_cdc %>%
-  dplyr::filter(State == "Oyo") %>%
-  group_by(`Settlement Classification`, `Location`) %>% 
-  summarise(anopheles_caught = sum(`Total Anopheles`)) %>%
+ano_caught_cdc <- cdc_wet_dry_subset %>% 
+  group_by(settlement_type, location, season) %>%
+  summarise(anopheles_caught = sum(Anopheles, na.rm = TRUE)) %>%  # sum Anopheles, handling NA
   ungroup()
 
-# set number of night baits
-ano_caught_cdc$no_night_bait <- 14
+# set number of night baits to 14 for dry season and 28 for wet season
+ano_caught_cdc <- ano_caught_cdc %>%
+  mutate(no_night_bait = ifelse(season == "dry", 14, 28))
 
 # calculate HBR (# of mosquitoes collected / (number of nights x number of humans slept in the house as bait))
 ano_caught_cdc <- ano_caught_cdc %>%
   mutate(HBR = anopheles_caught / no_night_bait)
 
-# filter for indoor hbr
-hbr_indoor <- ano_caught_cdc %>% dplyr::filter(Location == "Indoor")
+# plot indoor and outdoor hbr data together
+wet_dry_palette <- c("#d9af8d", "#0d80bf")
 
-# plot indoor hbr
-hbr_indoor_plot <- ggplot(data = hbr_indoor, aes(x = `Settlement Classification`, y = HBR, 
-                                   group = `Settlement Classification`,
-                                   colour = `Settlement Classification`)) +
+hbr_plot <- ggplot(data = ano_caught_cdc, aes(x = settlement_type, y = HBR, 
+                                              group = interaction(location, season),
+                                              colour = season,
+                                              shape = location)) +
   scale_x_discrete(limits = c("Formal", "Informal", "Slum")) +
-  geom_point(size = 3.0) +
-  geom_line() +
+  geom_jitter(position = position_jitter(width = 0.1, height = 0), size = 5) + # jitter points as some HBR values are the same, causing overlap
   labs(y = "Human Biting Rate", x = "Settlement Type",
-       title = "Indoor Human Biting Rate by settlement type, 2023") +
+       title = "Human Biting Rate by Settlement Type, \nSeason, and Location of CDC Collection") +
+  scale_color_manual(
+    values = wet_dry_palette,
+    name = "Season",
+    labels = c("Dry", "Wet")
+  ) +
+  scale_shape_manual(
+    values = c("Indoor" = 15, "Outdoor" = 17),
+    name = "CDC"
+  ) +
   theme_manuscript() +
   theme(
     plot.title = element_text(size = 12),
-    legend.position = c(.95, .95),
-    legend.justification = c("right", "top"),
-    legend.box.just = "right",
-    legend.margin = margin(6, 6, 6, 6)
+    legend.position = c(0.95, 0.95), # Place legend inside the plot (top-right corner)
+    legend.justification = c("right", "top"), # Align legend box with top-right
+    legend.box = "horizontal", # Align legends horizontally
+    legend.box.background = element_rect(color = "black", size = 0.5), # Black outline
+    legend.spacing = unit(0.5, "cm"), # Space between legend items
+    legend.box.margin = margin(6, 6, 6, 6), # Padding inside the legend box
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14)
   )
-hbr_indoor_plot
+hbr_plot
 
-# filter for outdoor hbr
-hbr_outdoor <- ano_caught_cdc %>% dplyr::filter(Location == "Outdoor")
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_hbr_cdc_plot.pdf'), plot = hbr_plot, width = 8, height = 8)
 
-# plot outdoor hbr
-hbr_outdoor_plot <- ggplot(data = hbr_outdoor, aes(x = `Settlement Classification`, y = HBR, 
-                                    group = `Settlement Classification`,
-                                    colour = `Settlement Classification`)) +
+## =========================================================================================================================================
+### INDOOR RESIDUAL DENSITY (IRD) - Using PSC Data
+# Indoor Resting Density (IRD) = Number of Anopheles mosquitoes collected divided by the total number of rooms sampled
+## =========================================================================================================================================
+
+# filter data to include only PSC wet and dry (no CDC data)
+psc_wet_dry = subset(all_ento_data, (method %in% c("PSC")))
+
+# summarize anopheles caught by settlement classification and location
+ano_caught_psc <- psc_wet_dry %>% 
+  group_by(settlement_type, season) %>%
+  summarise(anopheles_caught = sum(Anopheles, na.rm = TRUE)) %>%  # sum Anopheles, handling NA
+  ungroup()
+
+# set number of rooms sampled to 40 for dry season and 40 for wet season
+ano_caught_psc <- ano_caught_psc %>%
+  mutate(no_rooms_sampled = ifelse(season == "dry", 40, 40))
+
+# calculate IRD (# of mosquitoes collected / number of rooms sampled)
+ano_caught_psc <- ano_caught_psc %>%
+  mutate(IRD = anopheles_caught / no_rooms_sampled)
+
+# create IRD plot
+ird_plot <- ggplot(data = ano_caught_psc, 
+                   aes(x = settlement_type, y = IRD, 
+                       group = season, # Group by season for clear differentiation
+                       colour = season)) + # Color points by season
   scale_x_discrete(limits = c("Formal", "Informal", "Slum")) +
-  geom_point(size = 3.0) +
-  geom_line() +
-  labs(y = "Human Biting Rate", x = "Settlement Type",
-       title = "Outdoor Human Biting Rate by settlement type, 2023") +
+  geom_point(size = 5) + # Add points for IRD
+  labs(y = "Indoor Residual Density", x = "Settlement Type",
+       title = "Indoor Residual Density by Settlement Type and Season") +
+  scale_color_manual(
+    values = wet_dry_palette, # Use your defined palette for seasons
+    name = "Season",
+    labels = c("Dry", "Wet") # Explicitly label seasons
+  ) +
   theme_manuscript() +
   theme(
     plot.title = element_text(size = 12),
-    legend.position = c(.95, .95),
-    legend.justification = c("right", "top"),
-    legend.box.just = "right",
-    legend.margin = margin(6, 6, 6, 6)
+    legend.position = c(0.2, 0.95), # Place legend inside the plot (top-right corner)
+    legend.justification = c("right", "top"), # Align legend box with top-right
+    legend.box = "horizontal", # Align legends horizontally
+    legend.box.background = element_rect(color = "black", size = 0.5), # Black outline
+    legend.spacing = unit(0.5, "cm"), # Space between legend items
+    legend.box.margin = margin(6, 6, 6, 6), # Padding inside the legend box
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14)
   )
-hbr_outdoor_plot
+ird_plot
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_ird_psc_plot.pdf'), plot = ird_plot, width = 8, height = 8)
+
+
+## =========================================================================================================================================
+### Co-Infection Analysis (Lymphatic Filariasis (LF))
+## =========================================================================================================================================
+
+# calculate rates of LF and sporozoite positivity
+molecular_df_rates <- molecular_df %>%
+  summarise(
+    lf_positive_rate = mean(lf_coinfection == "Positive"),
+    sporozoite_positive_rate = mean(sporozoite_result == "Positive")
+  )
+
+# calculate rates of positive cases for lf_coinfection and sporozoite_result by collection type
+rates_by_method <- molecular_df %>%
+  # create a new variable for collection type based on method and location
+  mutate(
+    collection_type = case_when(
+      method == "CDC" & location == "Indoor" ~ "Indoor CDC",
+      method == "CDC" & location == "Outdoor" ~ "Outdoor CDC",
+      method == "PSC" ~ "PSC"
+    )
+  ) %>%
+  group_by(collection_type) %>%
+  # get rates of positive cases for lf_coinfection and sporozoite_result
+  summarise(
+    lf_positive_rate = mean(lf_coinfection == "Positive", na.rm = TRUE),
+    sporozoite_positive_rate = mean(sporozoite_result == "Positive", na.rm = TRUE)
+  )
+
+## -----------------------------------------------------------------------------------------------------------------------------------------
+### 1) Prevalence of LF Co-Infection:
+# Calculate the proportion of mosquitoes with positive lf_coinfection results overall and stratified by location and method.
+## -----------------------------------------------------------------------------------------------------------------------------------------
+
+# reshape data to long format for easier plotting
+coinfection_long <- rates_by_method %>%
+  pivot_longer(
+    cols = c(lf_positive_rate, sporozoite_positive_rate),
+    names_to = "rate_type",
+    values_to = "rate"
+  ) %>%
+  mutate(
+    label = paste0(round(rate * 100, 1), "%") # round rate and convert to percentage for labeling
+  )
+
+# plot: prevalence of LF and sporozoites by collection method
+coinfection_plot <- ggplot(coinfection_long, aes(x = collection_type, y = rate, fill = rate_type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(
+    aes(label = label, y = rate / 2), # adjust y to center text vertically inside the bar
+    position = position_dodge(width = 0.8), # match bar dodge position
+    size = 5,
+    color = "white" # ensure text is visible on bars
+  ) +
+  scale_fill_manual(
+    values = c("lf_positive_rate" = "#264653", "sporozoite_positive_rate" = "#2a9d8f"),
+    labels = c("LF Positivity Rate", "Sporozoite Positivity Rate")
+  ) +
+  labs(
+    x = "Collection Method",
+    y = "Rate",
+    fill = "Rate Type",
+    title = "Rates of Lymphatic Filariasis (LF) and \nSporozoite Positivity by Collection Method"
+  ) +
+  theme_manuscript() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+coinfection_plot
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_coinfection_plot.pdf'), plot = coinfection_plot, width = 12, height = 8)
+
+# plot: prevalence by species
+ggplot(molecular_df, aes(x = species, fill = lf_coinfection)) +
+  geom_bar(position = "fill") +
+  labs(y = "Proportion", x = "Species", fill = "LF Co-Infection") +
+  theme_manuscript()
+
+# plot: prevalence by ward
+ggplot(molecular_df, aes(x = ward_name, fill = lf_coinfection)) +
+  geom_bar(position = "fill") +
+  labs(y = "Proportion", x = "Ward", fill = "LF Co-Infection") +
+  theme_manuscript()
+
+## -----------------------------------------------------------------------------------------------------------------------------------------
+### 2) Co-Infection with Sporozoites:
+# What proportion of LF-positive mosquitoes are also positive for sporozoites?
+## -----------------------------------------------------------------------------------------------------------------------------------------
+
+# plot: LF and sporozoite co-infection
+ggplot(molecular_df, aes(x = sporozoite_result, y = lf_coinfection, color = species)) +
+  geom_jitter() +
+  labs(x = "Sporozoite Result", y = "LF Co-Infection", color = "Species") +
+  theme_manuscript()
+
+
+corr_plot <- ggplot(molecular_df %>% dplyr::filter(species == "An. gambiae s.l"), aes(x = species, fill = interaction(sporozoite_result, lf_coinfection))) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("Positive.Positive" = "#1f77b4", "Positive.Negative" = "#ff7f0e", 
+                               "Negative.Positive" = "#2ca02c", "Negative.Negative" = "#d62728"),
+                    labels = c("Sporozoite Positive, LF Positive", "Sporozoite Positive, LF Negative",
+                               "Sporozoite Negative, LF Positive", "Sporozoite Negative, LF Negative")) +
+  labs(x = NULL, y = "Proportion", fill = "Combination of Results", 
+       title = "Relationship Between Lymphatic Filariasis \nand Sporozoite Positivity in An. Gambiae") +
+  theme_manuscript() +
+  theme(axis.text.x = element_text(vjust = 1))
+
+# save as .pdf
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_corr_plot.pdf'), plot = corr_plot, width = 8, height = 10)

@@ -511,101 +511,171 @@ species_inv_plot <- ggplot(species_inventory, aes(x = species, y = count, fill =
 ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_inv_plot.pdf'), plot = species_inv_plot, width = 8, height = 8)
 
 ## -----------------------------------------------------------------------------------------------------------------------------------------
-### 2) Comparison of Species Composition Across Seasons Plot
+### 2) Comparison of Species Composition Across Seasons and Settlement Types Plot
 ## -----------------------------------------------------------------------------------------------------------------------------------------
 
 # df to calculate counts of each species by season
 species_inventory_by_season <- all_ento_data %>%
-  group_by(season) %>%
+  group_by(season, settlement_type) %>% 
   summarise(
     total_An.gambiae = sum(An.gambiae, na.rm = TRUE),
     total_An.funestus = sum(An.funestus, na.rm = TRUE),
     total_Culicine = sum(Culicine, na.rm = TRUE),
     total_Other = sum(Other, na.rm = TRUE)
   ) %>%
-  pivot_longer(cols = -season, names_to = "species", values_to = "count") %>% 
-  # add total count and calculate proportion of each mosquito species per season
-  group_by(season) %>%
+  pivot_longer(
+    cols = starts_with("total_"), # include all species columns starting with "total_"
+    names_to = "species",
+    values_to = "count"
+  ) %>%
+  # calculate total count and proportions for each settlement type within each season
+  group_by(season, settlement_type) %>%
   mutate(
-    total_count = sum(count),  # total count of mosquitoes for the season
-    proportion = count / total_count * 100  # proportion for each species
+    total_count = sum(count, na.rm = TRUE), # total count for the settlement type and season
+    proportion = (count / total_count) * 100 # proportion for each species
   ) %>%
   ungroup()
 
-# stacked bar plot
-species_season_plot <- ggplot(species_inventory_by_season, aes(x = season, y = count, fill = species)) +
-  geom_bar(stat = "identity", position = "stack") +
-  scale_fill_manual(
-    values = palette,
-    name = "Species",
-    labels = c("An.gambiae", "An.funestus", "Culicine", "Other")
-  ) +
-  labs(
-    title = "Mosquito Species Composition by Season",
-    x = "Season",
-    y = "Count"
-  ) +
-  scale_x_discrete(labels = c("Dry", "Wet")) +
-  theme_minimal() +
-  theme(
-    legend.position = "right",
-    plot.subtitle = element_text(hjust = 0.5),
-    plot.title = element_text(hjust = 0.5)
-  )
 
-# save as .pdf
-ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_by_season_plot.pdf'), plot = species_season_plot, width = 8, height = 8)
+# plot that excludes Culicines to better see Gambiae/Funestus proportion
 
-# new plot that excludes Culicines to better see Gambiae/Funestus proportion
-palette_no_cul <- c("#e8dab2", "#dd6e42", "#c0d6df")
+palette_no_cul <- c("#7268A6", "#86a3C3", "#B6CEC7")
+
+# remove culicines
 species_inventory_by_season_no_cul = subset(species_inventory_by_season, !(species %in% c("total_Culicine")))
+
+# remove settlement type = NA
+species_inventory_by_season_no_cul = subset(species_inventory_by_season_no_cul, !(settlement_type %in% c(NA)))
+
+# make new variable with percentage for labeling on the plot
+species_inventory_by_season_no_cul <- species_inventory_by_season_no_cul %>%
+  mutate(label = ifelse(proportion > 0, paste0(round(proportion, 1), "%"), "")) # only show label if percentage > 0
+
 species_season_plot_no_cul <- ggplot(species_inventory_by_season_no_cul, aes(x = season, y = count, fill = species)) +
   geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~settlement_type) +
+  geom_text(aes(label = count), position = position_stack(vjust = 0.5), size = 4, color = "white") +
   scale_fill_manual(
     values = palette_no_cul,
     name = "Species",
-    labels = c("An.gambiae", "An.funestus", "Other")
+    labels = c("An. gambiae", "An. funestus", "Other")
   ) +
   labs(
-    title = "Mosquito Species Composition by Season",
+    title = "Mosquito Species Composition by \nSeason and Settlement Type",
     x = "Season",
     y = "Count"
   ) +
   scale_x_discrete(labels = c("Dry", "Wet")) +
-  theme_minimal() +
+  theme_manuscript() +
   theme(
     legend.position = "right",
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
     plot.subtitle = element_text(hjust = 0.5),
-    plot.title = element_text(hjust = 0.5)
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14)
   )
+species_season_plot_no_cul
 
 # save as .pdf
-ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_by_season_no_cul.pdf'), plot = species_season_plot_no_cul, width = 8, height = 8)
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_by_season_no_cul.pdf'), plot = species_season_plot_no_cul, width = 8, height = 6)
 
-# export this data as a table (hard to see in plot)
-library(officer)
-library(knitr)
+## -----------------------------------------------------------------------------------------------------------------------------------------
+### TABLE 1 - RELATIVE ABUNDANCE of Species Found in Ibadan (Dry + Wet Season Data)
+## -----------------------------------------------------------------------------------------------------------------------------------------
 
-# create doc and add table
-species_seasons_table <- species_inventory_by_season %>%
+# format table
+species_inventory_formatted <- species_inventory_by_season %>%
   mutate(
-    proportion = round(proportion, 2),  # Round proportions to 2 decimal places
-    species = gsub("total_", "", species)  # Remove 'total_' from species names
+    abundance = paste0(count, " (", round(proportion, 1), "%)")
+  ) %>%
+  # rename species
+  mutate(
+    species = case_when(
+      species == "total_An.gambiae" ~ "An. gambiae",
+      species == "total_An.funestus" ~ "An. funestus",
+      species == "total_Culicine" ~ "Culicine",
+      species == "total_Other" ~ "Other",
+      TRUE ~ species
+    )
+  ) %>%
+  # pivot to create separate columns for dry and wet seasons
+  select(season, species, abundance) %>%
+  pivot_wider(
+    names_from = season,
+    values_from = abundance,
+    names_prefix = "Season: "
+  ) %>%
+  # rename columns for final output
+  rename(
+    Species = species,
+    `Dry Season Abundance (%) in Ibadan` = `Season: dry`,
+    `Wet Season Abundance (%) in Ibadan` = `Season: wet`
   )
+
+# add totals for each season
+totals <- species_inventory_by_season %>%
+  group_by(season) %>%
+  summarise(
+    count = sum(count),
+    total_count = first(total_count)
+  ) %>%
+  mutate(
+    species = "Total",
+    proportion = 100,
+    abundance = paste0(count, " (", proportion, "%)")
+  ) %>%
+  select(season, species, abundance) %>%
+  pivot_wider(
+    names_from = season,
+    values_from = abundance,
+    names_prefix = "Season: "
+  ) %>%
+  rename(
+    Species = species,
+    `Dry Season Abundance (%) in Ibadan` = `Season: dry`,
+    `Wet Season Abundance (%) in Ibadan` = `Season: wet`
+  )
+
+# combine species data with totals
+final_table <- bind_rows(species_inventory_formatted, totals)
+
+# add a "Total" column by summing the dry and wet season counts
+final_table <- final_table %>%
+  mutate(
+    Dry_Count = as.numeric(str_extract(`Dry Season Abundance (%) in Ibadan`, "^\\d+")),
+    Wet_Count = as.numeric(str_extract(`Wet Season Abundance (%) in Ibadan`, "^\\d+"))
+  ) %>%
+  # calculate total counts and proportions
+  rowwise() %>%
+  mutate(
+    Total_Count = Dry_Count + Wet_Count,
+    Total_Percentage = round((Total_Count / 2797) * 100, 1),
+    "Total Abundance (%)" = paste0(Total_Count, " (", Total_Percentage, "%)")
+  ) %>%
+  # select and format final columns
+  ungroup() %>%
+  select(Species, 
+         `Dry Season Abundance (%) in Ibadan`, 
+         `Wet Season Abundance (%) in Ibadan`, 
+         "Total Abundance (%)")
 
 # create the Word document
 doc <- read_docx()
 
 # add a title to the Word document
 doc <- doc %>%
-  body_add_par("Mosquito Species Composition by Season", style = "heading 1")
+  body_add_par("Mosquito Species Composition by Season in Ibadan", style = "heading 1")
 
 # add the table to the Word document with a default style
 doc <- doc %>%
-  body_add_table(value = species_seasons_table, style = "table_template")
+  body_add_table(value = final_table, style = "table_template")
 
 # save the Word document to the specified directory
-output_file <- file.path(ResultDir, "species_seasons_table.docx")
+output_file <- file.path(ResultDir, "table1.docx")
 print(doc, target = output_file)
 
 ## -----------------------------------------------------------------------------------------------------------------------------------------
@@ -622,17 +692,23 @@ method_df <- all_ento_data %>%
       method == "PSC" ~ "PSC"
     )
   ) %>%
-  group_by(settlement_type, collection_type) %>%
+  group_by(settlement_type, collection_type, season) %>%
   summarise(
     An_gambiae_sum = sum(An.gambiae, na.rm = TRUE),
     An_funestus_sum = sum(An.funestus, na.rm = TRUE)
   ) %>%
   pivot_longer(cols = c(An_gambiae_sum, An_funestus_sum), names_to = "species", values_to = "count")
 
+# make wet df and dry df
+wet_method_df <- method_df %>%
+  dplyr::filter(season %in% c("wet"))
+dry_method_df <- method_df %>%
+  dplyr::filter(season %in% c("dry"))
+
 method_palette <- c("#696d7d", "#8d9f87", "#f0dcca")
              
-# plot species composition data
-species_by_method <- ggplot(method_df, aes(x = species, y = count, fill = collection_type)) +
+# plot wet season species composition data
+wet_species_by_method <- ggplot(wet_method_df, aes(x = species, y = count, fill = collection_type)) +
   geom_bar(stat = "identity") +
   facet_wrap(~settlement_type) +
   scale_fill_manual(
@@ -642,16 +718,38 @@ species_by_method <- ggplot(method_df, aes(x = species, y = count, fill = collec
   ) +
   scale_x_discrete(labels = c("An. funestus", "An. gambiae")) +
   labs(
-    title = "Mosquito Species by Collection Method and Settlement Type",
+    title = "Mosquito Species by Collection Method \nand Settlement Type: Wet Season",
     x = "Species",
     y = "Number of Mosquitoes",
     fill = "Collection Method"
   ) +
-  theme_manuscript()
-species_by_method
+  theme_manuscript() + 
+  theme(plot.title = element_text(size = 14))
+wet_species_by_method
+
+# plot dry season species composition data
+dry_species_by_method <- ggplot(dry_method_df, aes(x = species, y = count, fill = collection_type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~settlement_type) +
+  scale_fill_manual(
+    values = method_palette,
+    name = "Collection Method",
+    labels = c("Indoor CDC", "Outdoor CDC", "PSC")
+  ) +
+  scale_x_discrete(labels = c("An. funestus", "An. gambiae")) +
+  labs(
+    title = "Mosquito Species by Collection Method \nand Settlement Type: Dry Season",
+    x = "Species",
+    y = "Number of Mosquitoes",
+    fill = "Collection Method"
+  ) +
+  theme_manuscript() + 
+  theme(plot.title = element_text(size = 14))
+dry_species_by_method
 
 # save as .pdf
-ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_species_method_plot.pdf'), plot = species_by_method, width = 12, height = 8)
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_wet_species_method_plot.pdf'), plot = wet_species_by_method, width = 12, height = 8)
+ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_dry_species_method_plot.pdf'), plot = dry_species_by_method, width = 12, height = 8)
 
 ## -----------------------------------------------------------------------------------------------------------------------------------------
 ### 4) Blood Meal Status (PSC Data Only) by Species and Settlement Type

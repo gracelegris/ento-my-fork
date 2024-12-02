@@ -67,6 +67,9 @@ library(dplyr)
 library(gridExtra)
 library(sf)
 library(ggrepel)
+library(car)
+library(officer)
+library(openxlsx)
 
 # define a custom theme for maps
 map_theme <- function(){
@@ -461,6 +464,14 @@ cdc_dry_counts$household_code <- as.character(cdc_dry_counts$household_code)
 
 all_ento_data <- bind_rows(cdc_dry_counts, cdc_wet_counts, psc_dry_counts, psc_wet_counts)
 
+# recode wet season erroneous "informal" settlement type values to "slum"
+all_ento_data <- all_ento_data %>%
+  mutate(
+     settlement_type = case_when(
+      season == "wet" & settlement_type == "Informal" ~ "Slum",
+      TRUE ~ settlement_type)
+  )
+
 # save this formatted df
 write.xlsx(all_ento_data, file.path(EntoDat, "all_ento_dry_wet_data.xlsx"))
 
@@ -755,7 +766,9 @@ ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_dry_species_method_plot.p
 ### 4) Blood Meal Status (PSC Data Only) by Species and Settlement Type
 ## -----------------------------------------------------------------------------------------------------------------------------------------
 
-psc_bm_df <- bind_rows(psc_dry_counts, psc_wet_counts)
+# filter all df for psc data
+psc_bm_df <- all_ento_data %>%
+  dplyr::filter(method == "PSC")
 
 # make df with counts of blood meal status by species and settlement type
 bm_status_by_settlement <- psc_bm_df %>%
@@ -846,8 +859,8 @@ molecular_df <- molecular_df %>%
     time == "3 to 4" ~ "3-4am",
     time == "4 to 5" ~ "4-5am",
     time == "5 to 6" ~ "5-6am",
-    time == "2 to 1" ~ NA, # data entry error??? recode these, or remove them?
-    time == "11 to 2" ~ NA,  # data entry error??? recode these, or remove them?
+    time == "2 to 1" ~ "12-1pm", # data entry error, recoding
+    time == "11 to 2" ~ "11-12pm",  # data entry error, recoding
     TRUE ~ time # keep other values as is
   )) %>%
   select(-`...8`)
@@ -1012,7 +1025,7 @@ hbr_plot <- ggplot(data = ano_caught_cdc, aes(x = settlement_type, y = HBR,
   theme_manuscript() +
   theme(
     plot.title = element_text(size = 12),
-    legend.position = c(0.95, 0.95), # Place legend inside the plot (top-right corner)
+    legend.position = c(0.98, 0.98), # Place legend inside the plot (top-right corner)
     legend.justification = c("right", "top"), # Align legend box with top-right
     legend.box = "horizontal", # Align legends horizontally
     legend.box.background = element_rect(color = "black", size = 0.5), # Black outline
@@ -1025,6 +1038,48 @@ hbr_plot
 
 # save as .pdf
 ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_hbr_cdc_plot.pdf'), plot = hbr_plot, width = 8, height = 8)
+
+## =========================================================================================================================================
+### ANOVA for Human Biting Rate (HBR)
+## =========================================================================================================================================
+
+# fit the three-way ANOVA model and summarize results
+anova_HBR <- aov(HBR ~ season * settlement_type * location, data = ano_caught_cdc)
+
+# extract the ANOVA table
+anova_table <- summary(anova_HBR)
+
+# calculate F-statistic and p-value for each term
+anova_results <- data.frame(
+  Df = anova_table[[1]]$Df,
+  `Sum Sq` = anova_table[[1]]$`Sum Sq`,
+  `Mean Sq` = anova_table[[1]]$`Mean Sq`,
+  `F-value` = anova_table[[1]]$`Mean Sq` / anova_table[[1]]$`Mean Sq`[length(anova_table[[1]]$`Mean Sq`)],
+  `P-value` = pf(
+    anova_table[[1]]$`Mean Sq` / anova_table[[1]]$`Mean Sq`[length(anova_table[[1]]$`Mean Sq`)],
+    anova_table[[1]]$Df,
+    anova_table[[1]]$Df[length(anova_table[[1]]$Df)],
+    lower.tail = FALSE
+  )
+)
+
+# add significance column and interaction types
+anova_results <- anova_results %>%
+  mutate(
+    Significance = ifelse(abs(P.value) < 0.05, "Yes", "No")
+  ) %>%
+  mutate(test = c("season", "settlement_type", "location", "season:settlement_type", 
+                  "season:location", "settlement_type:location", "season:settlement_type:location")) %>%
+  select(Df, test, Sum.Sq, Mean.Sq, F.value, P.value, Significance)
+
+# export as table in word
+doc <- read_docx()
+doc <- doc %>%
+  body_add_par("ANOVA results for HBR", style = "heading 1")
+doc <- doc %>%
+  body_add_table(value = anova_results, style = "table_template")
+output_file <- file.path(ResultDir, "anova_hbr.docx")
+print(doc, target = output_file)
 
 ## =========================================================================================================================================
 ### INDOOR RESIDUAL DENSITY (IRD) - Using PSC Data
@@ -1040,9 +1095,9 @@ ano_caught_psc <- psc_wet_dry %>%
   summarise(anopheles_caught = sum(Anopheles, na.rm = TRUE)) %>%  # sum Anopheles, handling NA
   ungroup()
 
-# set number of rooms sampled to 40 for dry season and 40 for wet season
+# set number of rooms sampled to 40 for dry season and 120 for wet season
 ano_caught_psc <- ano_caught_psc %>%
-  mutate(no_rooms_sampled = ifelse(season == "dry", 40, 40))
+  mutate(no_rooms_sampled = ifelse(season == "dry", 40, 120))
 
 # calculate IRD (# of mosquitoes collected / number of rooms sampled)
 ano_caught_psc <- ano_caught_psc %>%
@@ -1079,6 +1134,46 @@ ird_plot
 # save as .pdf
 ggsave(filename = paste0(ResultDir, "/", Sys.Date(), '_ird_psc_plot.pdf'), plot = ird_plot, width = 8, height = 8)
 
+## =========================================================================================================================================
+### ANOVA for Indoor Residual Density (IRD)
+## =========================================================================================================================================
+
+# fit the two-way ANOVA model and summarize results
+anova_IRD <- aov(IRD ~ season * settlement_type, data = ano_caught_psc)
+
+# extract the ANOVA table
+anova_table_IRD <- summary(anova_IRD)
+
+# calculate F-statistic and p-value for each term
+anova_results_IRD <- data.frame(
+  Df = anova_table_IRD[[1]]$Df,
+  `Sum Sq` = anova_table_IRD[[1]]$`Sum Sq`,
+  `Mean Sq` = anova_table_IRD[[1]]$`Mean Sq`,
+  `F-value` = anova_table_IRD[[1]]$`Mean Sq` / anova_table_IRD[[1]]$`Mean Sq`[length(anova_table_IRD[[1]]$`Mean Sq`)],
+  `P-value` = pf(
+    anova_table_IRD[[1]]$`Mean Sq` / anova_table_IRD[[1]]$`Mean Sq`[length(anova_table_IRD[[1]]$`Mean Sq`)],
+    anova_table_IRD[[1]]$Df,
+    anova_table_IRD[[1]]$Df[length(anova_table_IRD[[1]]$Df)],
+    lower.tail = FALSE
+  )
+)
+
+# add significance column and interaction types
+anova_results_IRD <- anova_results_IRD %>%
+  mutate(
+    Significance = ifelse(abs(P.value) < 0.05, "Yes", "No")
+  ) %>%
+  mutate(test = c("season", "settlement_type", "season:settlement_type")) %>%
+  select(Df, test, Sum.Sq, Mean.Sq, F.value, P.value, Significance)
+
+# export as table in word
+doc <- read_docx()
+doc <- doc %>%
+  body_add_par("ANOVA results for IRD", style = "heading 1")
+doc <- doc %>%
+  body_add_table(value = anova_results_IRD, style = "table_template")
+output_file <- file.path(ResultDir, "anova_ird.docx")
+print(doc, target = output_file)
 
 ## =========================================================================================================================================
 ### Co-Infection Analysis (Lymphatic Filariasis (LF))
@@ -1135,7 +1230,7 @@ coinfection_plot <- ggplot(coinfection_long, aes(x = collection_type, y = rate, 
   ) +
   scale_fill_manual(
     values = c("lf_positive_rate" = "#264653", "sporozoite_positive_rate" = "#2a9d8f"),
-    labels = c("LF Positivity Rate", "Sporozoite Positivity Rate")
+    labels = c("LF Coinfection Rate", "Sporozoite Positivity Rate")
   ) +
   labs(
     x = "Collection Method",
